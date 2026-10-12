@@ -1,0 +1,27 @@
+schema_version: 1
+scene_id: standalone_drawer
+world:
+  up_axis: Z
+  meters_per_unit: 1.0
+table:
+  size_m: [1.6, 1.2, 0.05]
+  top_z_m: 0.75
+drawer:
+  id: drawer
+  position_m: [0.0, 0.0, 0.75]
+  yaw_deg: 30.0
+  size_m: [0.36, 0.34, 0.24]
+  wall_thickness_m: 0.012
+  clearance_m: 0.006
+  limits_m: [0.0, 0.25]
+  initial_position_m: 0.0
+  mass_kg: 1.5
+  cabinet_mass_kg: 12.0
+  physics_material:
+    static_friction: 0.6
+    dynamic_friction: 0.5
+    restitution: 0.0
+  drive:
+    stiffness: 0.0
+    damping: 0.0
+    max_force_n: 40.0

@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Drawer Interaction Simulator</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background: #0a0a0f; color: #e0e0e0; overflow-x: hidden; }
+.header { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); padding: 16px 24px; display: flex; align-items: center; gap: 16px; border-bottom: 1px solid #2a2a4a; }
+.header h1 { font-size: 20px; font-weight: 600; color: #fff; }
+.header .tag { background: #0f3460; color: #4fc3f7; padding: 3px 10px; border-radius: 12px; font-size: 12px; }
+.main { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; height: calc(100vh - 60px); gap: 1px; background: #1a1a2e; }
+.panel { background: #0d0d14; position: relative; overflow: hidden; }
+.panel-title { position: absolute; top: 12px; left: 16px; font-size: 13px; color: #8888aa; z-index: 10; letter-spacing: 0.5px; }
+#canvas3d { width: 100%; height: 100%; display: block; }
+.controls { position: absolute; bottom: 12px; left: 16px; right: 16px; display: flex; gap: 8px; align-items: center; z-index: 10; }
+.controls button { background: #1a1a3e; border: 1px solid #3a3a5e; color: #ccc; padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 13px; transition: all 0.2s; }
+.controls button:hover { background: #2a2a5e; color: #fff; }
+.controls button.active { background: #0f3460; border-color: #4fc3f7; color: #4fc3f7; }
+.slider-wrap { flex: 1; display: flex; align-items: center; gap: 8px; }
+.slider-wrap input { flex: 1; accent-color: #4fc3f7; }
+.slider-wrap span { font-size: 12px; color: #888; min-width: 50px; }
+.chart-container { padding: 40px 16px 16px 16px; height: 100%; }
+.chart-container canvas { width: 100% !important; height: 100% !important; }
+.mode-selector { display: flex; gap: 0; margin-left: auto; }
+.mode-selector button { background: #1a1a3e; border: 1px solid #3a3a5e; color: #888; padding: 6px 16px; cursor: pointer; font-size: 13px; transition: all 0.2s; }
+.mode-selector button:first-child { border-radius: 6px 0 0 6px; }
+.mode-selector button:last-child { border-radius: 0 6px 6px 0; }
+.mode-selector button.active { background: #0f3460; border-color: #4fc3f7; color: #4fc3f7; }
+.stats { position: absolute; top: 12px; right: 16px; font-size: 12px; color: #666; z-index: 10; text-align: right; }
+.stats span { color: #4fc3f7; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Drawer Interaction Physics</h1>
+  <span class="tag">Isaac Sim 5.1 / PhysX</span>
+  <div class="mode-selector">
+    <button id="btn-force" class="active" onclick="loadMode('external_force')">External Force</button>
+    <button id="btn-drive" onclick="loadMode('joint_drive')">Joint Drive</button>
+  </div>
+</div>
+
+<div class="main">
+  <!-- 3D View -->
+  <div class="panel" id="panel-3d">
+    <div class="panel-title">3D VIEW</div>
+    <div class="stats" id="stats-3d"></div>
+    <canvas id="canvas3d"></canvas>
+    <div class="controls">
+      <button id="btn-play" onclick="togglePlay()">&#9654; Play</button>
+      <div class="slider-wrap">
+        <input type="range" id="time-slider" min="0" max="1000" value="0" oninput="seekTo(this.value)">
+        <span id="time-label">0.000 s</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Position Chart -->
+  <div class="panel">
+    <div class="panel-title">DISPLACEMENT</div>
+    <div class="chart-container"><canvas id="chart-pos"></canvas></div>
+  </div>
+
+  <!-- Velocity Chart -->
+  <div class="panel">
+    <div class="panel-title">VELOCITY</div>
+    <div class="chart-container"><canvas id="chart-vel"></canvas></div>
+  </div>
+
+  <!-- Command Chart -->
+  <div class="panel">
+    <div class="panel-title" id="cmd-title">APPLIED FORCE</div>
+    <div class="chart-container"><canvas id="chart-cmd"></canvas></div>
+  </div>
+</div>
+
+<!-- Three.js -->
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/examples/js/controls/OrbitControls.js"></script>
+<!-- Chart.js -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+<script>
+// Globals
+let states = [];
+let currentFrame = 0;
+let playing = false;
+let animId = null;
+let charts = {};
+let mode = 'external_force';
+let backend = 'isaac';
+
+// Three.js scene
+const canvas = document.getElementById('canvas3d');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setClearColor(0x0d0d14);
+renderer.setPixelRatio(window.devicePixelRatio);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 100);
+camera.position.set(0.6, 0.4, 0.5);
+
+const controls = new THREE.OrbitControls(camera, canvas);
+controls.enableDamping = true;
+controls.target.set(0, 0, 0.4);
+
+// Lights
+scene.add(new THREE.AmbientLight(0x404060, 1.5));
+const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
+dirLight.position.set(2, 3, 4);
+scene.add(dirLight);
+
+// Grid
+const grid = new THREE.GridHelper(2, 20, 0x222244, 0x181830);
+grid.rotation.x = Math.PI / 2;
+scene.add(grid);
+
+// Table
+const tableMat = new THREE.MeshStandardMaterial({ color: 0x6b4226, roughness: 0.8 });
+const tableTop = new THREE.Mesh(new THREE.BoxGeometry(1.6, 1.2, 0.05), tableMat);
+tableTop.position.set(0, 0, 0.725);
+scene.add(tableTop);
+
+// Cabinet
+const cabinetMat = new THREE.MeshStandardMaterial({ color: 0x8899aa, roughness: 0.6, metalness: 0.1 });
+const cabinetGroup = new THREE.Group();
+const D = 0.36, W = 0.34, H = 0.24, T = 0.012;
+const yawRad = 30 * Math.PI / 180;
+
+// Cabinet walls
+function addWall(parent, sx, sy, sz, px, py, pz, mat) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(sx, sy, sz), mat);
+  m.position.set(px, py, pz);
+  parent.add(m);
+}
+addWall(cabinetGroup, D, W, T, 0, 0, -H/2+T/2, cabinetMat); // bottom
+addWall(cabinetGroup, D, W, T, 0, 0, H/2-T/2, cabinetMat);  // top
+addWall(cabinetGroup, T, W, H-2*T, -D/2+T/2, 0, 0, cabinetMat); // back
+addWall(cabinetGroup, D-T, T, H-2*T, T/2, -W/2+T/2, 0, cabinetMat); // left
+addWall(cabinetGroup, D-T, T, H-2*T, T/2, W/2-T/2, 0, cabinetMat);  // right
+
+cabinetGroup.position.set(0, 0, 0.75);
+cabinetGroup.rotation.z = yawRad;
+scene.add(cabinetGroup);
+
+// Drawer
+const drawerMat = new THREE.MeshStandardMaterial({ color: 0x3a6ea5, roughness: 0.5, metalness: 0.15 });
+const drawerGroup = new THREE.Group();
+const g = 0.006;
+const iD = D - 2*(T+g), iW = W - 2*(T+g), iH = H - 2*(T+g);
+addWall(drawerGroup, iD, iW, T, 0, 0, -iH/2+T/2, drawerMat);
+addWall(drawerGroup, T, iW, iH-T, -iD/2+T/2, 0, T/2, drawerMat);
+addWall(drawerGroup, T, iW, iH-T, iD/2-T/2, 0, T/2, drawerMat);
+addWall(drawerGroup, iD-2*T, T, iH-T, 0, -iW/2+T/2, T/2, drawerMat);
+addWall(drawerGroup, iD-2*T, T, iH-T, 0, iW/2-T/2, T/2, drawerMat);
+
+// Handle
+const handleMat = new THREE.MeshStandardMaterial({ color: 0x333338, roughness: 0.3, metalness: 0.6 });
+addWall(drawerGroup, 0.014, W*0.38, 0.016, D/2+0.025, 0, 0, handleMat);
+addWall(drawerGroup, 0.025+T+g, 0.012, 0.012, D/2-(T+g)/2+0.0125, -W*0.14, 0, handleMat);
+addWall(drawerGroup, 0.025+T+g, 0.012, 0.012, D/2-(T+g)/2+0.0125, W*0.14, 0, handleMat);
+
+drawerGroup.position.set(0, 0, 0.75);
+drawerGroup.rotation.z = yawRad;
+scene.add(drawerGroup);
+
+// Force arrow
+const arrowDir = new THREE.Vector3(Math.cos(yawRad), Math.sin(yawRad), 0);
+const arrowOrigin = new THREE.Vector3(0, 0, 0.75);
+let forceArrow = new THREE.ArrowHelper(arrowDir, arrowOrigin, 0.01, 0xff4444, 0.02, 0.015);
+scene.add(forceArrow);
+
+// Limit markers
+const limitMat = new THREE.MeshBasicMaterial({ color: 0xff4444, transparent: true, opacity: 0.3 });
+const limitGeo = new THREE.BoxGeometry(0.005, W+0.02, H+0.02);
+const limitMax = new THREE.Mesh(limitGeo, limitMat);
+limitMax.position.set(0.25 * Math.cos(yawRad), 0.25 * Math.sin(yawRad), 0.75);
+limitMax.rotation.z = yawRad;
+scene.add(limitMax);
+
+// Playhead for charts
+let playheadLines = [];
+
+function resize() {
+  const rect = document.getElementById('panel-3d').getBoundingClientRect();
+  renderer.setSize(rect.width, rect.height);
+  camera.aspect = rect.width / rect.height;
+  camera.updateProjectionMatrix();
+}
+window.addEventListener('resize', resize);
+setTimeout(resize, 100);
+
+// Charts
+function createChart(canvasId, label, color, yLabel) {
+  const ctx = document.getElementById(canvasId).getContext('2d');
+  return new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: [],
+      datasets: [{
+        label: label,
+        data: [],
+        borderColor: color,
+        borderWidth: 1.5,
+        pointRadius: 0,
+        tension: 0.1,
+        fill: false,
+      }, {
+        label: 'Playhead',
+        data: [],
+        borderColor: '#ff4444',
+        borderWidth: 2,
+        pointRadius: 0,
+        borderDash: [4, 4],
+        fill: false,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: {
+          title: { display: true, text: 'Time (s)', color: '#666' },
+          ticks: { color: '#555', maxTicksLimit: 10 },
+          grid: { color: '#1a1a2e' },
+        },
+        y: {
+          title: { display: true, text: yLabel, color: '#666' },
+          ticks: { color: '#555' },
+          grid: { color: '#1a1a2e' },
+        },
+      },
+    },
+  });
+}
+
+function initCharts() {
+  if (charts.pos) { charts.pos.destroy(); charts.vel.destroy(); charts.cmd.destroy(); }
+  charts.pos = createChart('chart-pos', 'Position', '#4fc3f7', 'Position (m)');
+  charts.vel = createChart('chart-vel', 'Velocity', '#66bb6a', 'Velocity (m/s)');
+  const cmdLabel = mode === 'external_force' ? 'Force (N)' : 'Drive Target (m)';
+  document.getElementById('cmd-title').textContent = mode === 'external_force' ? 'APPLIED FORCE' : 'DRIVE TARGET';
+  charts.cmd = createChart('chart-cmd', cmdLabel, '#ffa726', cmdLabel);
+}
+
+function updateCharts() {
+  if (!states.length) return;
+  const times = states.map(s => s.simulation_time.toFixed(3));
+  const positions = states.map(s => s.position_m);
+  const velocities = states.map(s => s.velocity_m_s);
+  const commands = states.map(s => {
+    const cmd = s.applied_command || {};
+    if (mode === 'external_force') return cmd.force_norm_n || 0;
+    return cmd.position_m != null ? cmd.position_m : 0;
+  });
+
+  charts.pos.data.labels = times;
+  charts.pos.data.datasets[0].data = positions;
+  charts.vel.data.labels = times;
+  charts.vel.data.datasets[0].data = velocities;
+  charts.cmd.data.labels = times;
+  charts.cmd.data.datasets[0].data = commands;
+
+  updatePlayhead();
+}
+
+function updatePlayhead() {
+  if (!states.length) return;
+  const t = states[currentFrame].simulation_time;
+  [charts.pos, charts.vel, charts.cmd].forEach(chart => {
+    const yScale = chart.scales.y;
+    const playData = states.map((s, i) => {
+      if (Math.abs(s.simulation_time - t) < 0.001) return chart.data.datasets[0].data[i];
+      return null;
+    });
+    // Vertical line via annotation-like approach: set two points
+    const phData = new Array(states.length).fill(null);
+    phData[currentFrame] = yScale ? yScale.max : 0;
+    // Simple: just mark the current index
+    chart.data.datasets[1].data = phData;
+    chart.update('none');
+  });
+}
+
+// Data loading
+async function loadMode(m) {
+  mode = m;
+  document.getElementById('btn-force').classList.toggle('active', m === 'external_force');
+  document.getElementById('btn-drive').classList.toggle('active', m === 'joint_drive');
+
+  const resp = await fetch(`data/isaac_${m}/joint_states.jsonl`);
+  const text = await resp.text();
+  states = text.trim().split('\n').filter(l => l).map(l => JSON.parse(l));
+
+  currentFrame = 0;
+  playing = false;
+  document.getElementById('btn-play').innerHTML = '&#9654; Play';
+  document.getElementById('time-slider').max = states.length - 1;
+  document.getElementById('time-slider').value = 0;
+
+  initCharts();
+  updateCharts();
+  updateScene();
+  updateStats();
+}
+
+function updateScene() {
+  if (!states.length) return;
+  const s = states[currentFrame];
+  const pos = s.position_m;
+
+  // Move drawer along local X (rotated by yaw)
+  drawerGroup.position.x = pos * Math.cos(yawRad);
+  drawerGroup.position.y = pos * Math.sin(yawRad);
+  drawerGroup.position.z = 0.75;
+
+  // Force arrow
+  const cmd = s.applied_command || {};
+  const fn = cmd.force_norm_n || 0;
+  if (mode === 'external_force' && fn > 0.1) {
+    const handleWorld = new THREE.Vector3(
+      drawerGroup.position.x + (D/2+0.025) * Math.cos(yawRad),
+      drawerGroup.position.y + (D/2+0.025) * Math.sin(yawRad),
+      0.75,
+    );
+    forceArrow.position.copy(handleWorld);
+    forceArrow.setLength(fn / 20, 0.02, 0.015);
+    forceArrow.visible = true;
+  } else {
+    forceArrow.visible = false;
+  }
+
+  document.getElementById('time-label').textContent = s.simulation_time.toFixed(3) + ' s';
+  document.getElementById('time-slider').value = currentFrame;
+}
+
+function updateStats() {
+  if (!states.length) return;
+  const s = states[currentFrame];
+  const cn = s.contacts ? s.contacts.net_force_norm_n : 0;
+  document.getElementById('stats-3d').innerHTML =
+    `pos: <span>${s.position_m.toFixed(4)} m</span> &nbsp; vel: <span>${s.velocity_m_s.toFixed(4)} m/s</span> &nbsp; contact: <span>${cn.toFixed(1)} N</span>`;
+}
+
+function togglePlay() {
+  playing = !playing;
+  document.getElementById('btn-play').innerHTML = playing ? '&#9646;&#9646; Pause' : '&#9654; Play';
+}
+
+function seekTo(val) {
+  currentFrame = parseInt(val);
+  updateScene();
+  updatePlayhead();
+  updateStats();
+}
+
+// Animation loop
+let lastTime = 0;
+const playbackSpeed = 0.3; // 0.3x real-time for visibility
+function animate(timestamp) {
+  animId = requestAnimationFrame(animate);
+  controls.update();
+
+  if (playing && states.length) {
+    const dt = (timestamp - lastTime) / 1000;
+    if (dt > 0 && states.length > 1) {
+      const timeStep = states[1].simulation_time - states[0].simulation_time;
+      const framesToAdvance = Math.max(1, Math.round(dt * playbackSpeed / timeStep));
+      currentFrame = Math.min(currentFrame + framesToAdvance, states.length - 1);
+      if (currentFrame >= states.length - 1) {
+        currentFrame = 0; // loop
+      }
+      updateScene();
+      if (currentFrame % 3 === 0) updatePlayhead();
+      updateStats();
+    }
+  }
+  lastTime = timestamp;
+
+  renderer.render(scene, camera);
+}
+animate(0);
+
+// Initial load
+loadMode('external_force');
+</script>
+</body>
+</html>
